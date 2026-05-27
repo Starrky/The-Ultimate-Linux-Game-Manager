@@ -1,9 +1,6 @@
 import os
 import vdf
 import requests
-import html
-import re
-from bs4 import BeautifulSoup
 
 
 home_dir = os.path.expanduser("~")
@@ -36,7 +33,7 @@ def tree_dirs():
         print(dirs_content)
 
 
-def get_installed_steam_games_list():
+def get_vdf_list():
     print("Scanning steam games...")
 
     try:
@@ -61,35 +58,38 @@ def get_installed_steam_games_list():
         print("File not found: " + steam_lib_vdf)
 
 
-get_installed_steam_games_list()
-for steamlib in steam_lib_dirs:
-    steamapps_dir = steamlib + "/steamapps/"
+def get_installed_steam_games_list():
+    get_vdf_list()
+    for steamlib in steam_lib_dirs:
+        steamapps_dir = steamlib + "/steamapps/"
 
-    for file in os.listdir(steamapps_dir):
-        if "appmanifest" in str(file):
-            manifest_file = steamapps_dir + file
+        for file in os.listdir(steamapps_dir):
+            if "appmanifest" in str(file):
+                manifest_file = steamapps_dir + file
 
-            with open(manifest_file, "r") as f:
-                acf_file = vdf.load(f)
-                game_appid = acf_file["AppState"]["appid"]
-                game_name = acf_file["AppState"]["name"]
-                game_installdir = acf_file["AppState"]["installdir"]
-                compatdata_dir = (
-                    steamlib + "/steamapps/compatdata/" + str(game_appid) + "/pfx/"
-                )
-                has_compatdata = os.path.exists(compatdata_dir)
+                with open(manifest_file, "r") as f:
+                    acf_file = vdf.load(f)
+                    game_appid = acf_file["AppState"]["appid"]
+                    game_name = acf_file["AppState"]["name"]
+                    game_installdir = acf_file["AppState"]["installdir"]
+                    game_installdir = steamapps_dir + "common/" + game_installdir
+                    compatdata_dir = (
+                        steamlib + "/steamapps/compatdata/" + str(game_appid) + "/pfx/"
+                    )
+                    has_compatdata = os.path.exists(compatdata_dir)
 
-                if not any(word in game_name.lower() for word in steam_blacklist):
-                    steam_games[game_name] = {
-                        "game_install_dir": game_installdir,
-                        "game_appid": game_appid,
-                        "compdata": compatdata_dir
-                        if has_compatdata
-                        else "Native Linux Game (No Proton Prefix)",
-                    }
+                    if not any(word in game_name.lower() for word in steam_blacklist):
+                        steam_games[game_name] = {
+                            "game_install_dir": game_installdir,
+                            "game_appid": game_appid,
+                            "compdata": compatdata_dir
+                            if has_compatdata
+                            else "Native Linux Game (No Proton Prefix)",
+                        }
 
-                else:
-                    print("game/ app is steam redist/ proton")
+                    else:
+                        print("game/ app is steam redist/ proton")
+    return steam_games
 
 
 #
@@ -129,4 +129,16 @@ def get_page_id_from_steam_appid(appid: int) -> str | None:
     return str(page_id)
 
 
-get_page_id_from_steam_appid(39510)
+def main():
+    # Step 1: Scan for Steam libraries
+    steam_games = get_installed_steam_games_list()
+    for game_name, game_info in steam_games.items():
+        game_name = game_name
+        game_install_dir = game_info["game_install_dir"]
+        game_appid = game_info["game_appid"]
+        game_compdata = game_info["compdata"]
+
+
+if __name__ == "__main__":
+    main()
+# get_page_id_from_steam_appid(39510)
