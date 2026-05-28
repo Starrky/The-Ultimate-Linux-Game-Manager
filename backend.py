@@ -1,7 +1,8 @@
 import os
 import vdf
 import requests
-
+from ratelimit import limits, RateLimitException
+from backoff import on_exception, expo
 
 home_dir = os.path.expanduser("~")
 
@@ -69,20 +70,27 @@ def get_installed_steam_games_list():
 
                 with open(manifest_file, "r") as f:
                     acf_file = vdf.load(f)
-                    game_appid = acf_file["AppState"]["appid"]
-                    game_name = acf_file["AppState"]["name"]
-                    game_installdir = acf_file["AppState"]["installdir"]
-                    game_installdir = steamapps_dir + "common/" + game_installdir
-                    compatdata_dir = (
-                        steamlib + "/steamapps/compatdata/" + str(game_appid) + "/pfx/"
+                    steam_game_appid = acf_file["AppState"]["appid"]
+                    steam_game_name = acf_file["AppState"]["name"]
+                    steam_game_installdir = acf_file["AppState"]["installdir"]
+                    steam_game_installdir = (
+                        steamapps_dir + "common/" + steam_game_installdir
                     )
-                    has_compatdata = os.path.exists(compatdata_dir)
+                    steam_compatdata_dir = (
+                        steamlib
+                        + "/steamapps/compatdata/"
+                        + str(steam_game_appid)
+                        + "/pfx/"
+                    )
+                    has_compatdata = os.path.exists(steam_compatdata_dir)
 
-                    if not any(word in game_name.lower() for word in steam_blacklist):
-                        steam_games[game_name] = {
-                            "game_install_dir": game_installdir,
-                            "game_appid": game_appid,
-                            "compdata": compatdata_dir
+                    if not any(
+                        word in steam_game_name.lower() for word in steam_blacklist
+                    ):
+                        steam_games[steam_game_name] = {
+                            "game_install_dir": steam_game_installdir,
+                            "game_appid": steam_game_appid,
+                            "compdata": steam_compatdata_dir
                             if has_compatdata
                             else "Native Linux Game (No Proton Prefix)",
                         }
@@ -92,14 +100,15 @@ def get_installed_steam_games_list():
     return steam_games
 
 
-#
+@on_exception(expo, RateLimitException, max_tries=8)
+@limits(calls=30, period=60)  # 30 requests / 1 min
 def get_page_id_from_steam_appid(appid: int) -> str | None:
     """
     Get PCGamingWiki page ID based off Steam AppID.
     """
     appid = int(appid)
 
-    r = requests.get(
+    response = requests.get(
         API,
         params={
             "action": "cargoquery",
@@ -113,10 +122,10 @@ def get_page_id_from_steam_appid(appid: int) -> str | None:
         },
         timeout=20,
     )
+    if response.status_code != 200:
+        raise Exception("API response: {}".format(response.status_code))
 
-    r.raise_for_status()
-
-    data = r.json()
+    data = response.json()
     rows = data.get("cargoquery", [])
 
     # print("Rows is:", rows)
@@ -124,19 +133,32 @@ def get_page_id_from_steam_appid(appid: int) -> str | None:
     if not rows:
         return None
 
-    page_id = rows[0]["title"]["PageID"]
+    pcgw_game_page_id = rows[0]["title"]["PageID"]
+    # print(f"Page_ID for {game_name} is: {page_id}")
 
-    return str(page_id)
+    return str(pcgw_game_page_id)
 
 
 def main():
     # Step 1: Scan for Steam libraries
     steam_games = get_installed_steam_games_list()
     for game_name, game_info in steam_games.items():
-        game_name = game_name
-        game_install_dir = game_info["game_install_dir"]
-        game_appid = game_info["game_appid"]
-        game_compdata = game_info["compdata"]
+        steam_game_name = game_name
+        steam_game_install_dir = game_info["game_install_dir"]
+        steam_game_appid = game_info["game_appid"]
+        steam_game_compdata = game_info["compdata"]
+
+        print(f"DEBUG: Game Name: {steam_game_name}")
+        print(f"DEBUG: Install Dir: {steam_game_install_dir}")
+        print(f"DEBUG: AppID: {steam_game_appid}")
+        print(f"DEBUG: CompData: {steam_game_compdata}")
+
+        steam_game_page_id = get_page_id_from_steam_appid(steam_game_appid)
+        if steam_game_page_id:
+            steam_games[steam_game_name]["pcgw_game_page_id"] = steam_game_page_id
+            print(
+                f"DEBUG: PC Gaming Wiki ID: {steam_games[steam_game_name]['pcgw_game_page_id']}"
+            )
 
 
 if __name__ == "__main__":
