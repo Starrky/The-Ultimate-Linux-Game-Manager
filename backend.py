@@ -128,13 +128,10 @@ def get_page_id_from_steam_appid(appid: int) -> str | None:
     data = response.json()
     rows = data.get("cargoquery", [])
 
-    # print("Rows is:", rows)
-
     if not rows:
         return None
 
     pcgw_game_page_id = rows[0]["title"]["PageID"]
-    # print(f"Page_ID for {game_name} is: {page_id}")
 
     return str(pcgw_game_page_id)
 
@@ -163,4 +160,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-# get_page_id_from_steam_appid(39510)
