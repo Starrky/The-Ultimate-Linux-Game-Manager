@@ -7,7 +7,7 @@ __pycache__/
 *.so
 
 curr_test.py
-
+.direnv
 .pcgw_cache
 # Distribution / packaging
 .Python
