@@ -8,6 +8,7 @@ __pycache__/
 
 curr_test.py
 
+.pcgw_cache
 # Distribution / packaging
 .Python
 build/

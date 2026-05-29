@@ -7,10 +7,7 @@ import wikitextparser as wtp
 from wikitextparser import remove_markup, parse
 import time
 from functools import wraps
-import json
-import mwparserfromhell
-from pathvalidate import sanitize_filepath
-import re
+from pcgamingwiki_scrapper import *
 
 home_dir = os.path.expanduser("~")
 share_dir = home_dir + "/.local/share/"
@@ -52,144 +49,6 @@ pcgw_api_rate_limit = RateLimiter(
     calls_per_second=0.45
 )  # PC Gaming Wiki API rate limit ( it has 30 limit per minute, so I set it slightly below)
 # https://www.pcgamingwiki.com/wiki/PCGamingWiki:API
-
-
-PCGW_PATH_VARS = {
-    "localappdata": r"%LOCALAPPDATA%",
-    "appdata": r"%APPDATA%",
-    "steam": r"%STEAM%",
-    "game": r"<GAME_FOLDER>",
-    "uid": r"<USER_ID>",
-    "userprofile": r"%USERPROFILE%",
-    "userprofile\\documents": r"%USERPROFILE%\Documents",
-    "userprofile/documents": r"%USERPROFILE%\Documents",
-}
-"""
-{{p|game}} = <gameinstalldir>
-userprofile = <compdata>/pfx/drive_c/users/steamuser/AppData/LocalLow/
-{{p|appdata}} = <compdata>/pfx/drive_c/users/steamuser/AppData/Roaming/
-%LOCALAPPDATA% = <compdata>/pfx/drive_c/users/steamuser/AppData/Local/
-{{p|localappdata}} =  <compdata>/pfx/drive_c/users/steamuser/AppData/Local/
-uid seem to be unique so has to listdir for it
-steamuserdata_id has to be dirlisted from ~/.local/share/Steam/userdata/
-"""
-DROP_TEMPLATES = {
-    "note",
-    "ref",
-    "refcheck",
-    "refurl",
-    "cn",
-    "citation needed",
-}
-
-
-def extract_template_body(line: str) -> str | None:
-    """
-    Extracts the wikitext after:
-    DEBUG: Found the location:
-    """
-    marker = "DEBUG: Found the location:"
-    if marker not in line:
-        return None
-
-    value = line.split(marker, 1)[1].strip()
-    return value or None
-
-
-def render_pcgw_wikitext(wikitext: str) -> str:
-
-    code = mwparserfromhell.parse(wikitext)
-
-    # Replace nested templates from deepest to shallowest.
-    for template in reversed(code.filter_templates(recursive=True)):
-        name = str(template.name).strip().lower()
-
-        if name in {"p", "path"}:
-            try:
-                key = str(template.get(1).value).strip().lower()
-            except ValueError:
-                replacement = ""
-            else:
-                replacement = PCGW_PATH_VARS.get(key, f"<{key.upper()}>")
-
-            code.replace(template, replacement)
-
-        elif name in DROP_TEMPLATES:
-            code.replace(template, "")
-
-    text = code.strip_code(normalize=True, collapse=True)
-    return normalize_windows_path_text(text)
-
-
-def normalize_windows_path_text(path: str) -> str:
-    path = path.strip()
-
-    # Remove wiki leftovers.
-    path = re.sub(r"<ref[^>]*>.*?</ref>", "", path, flags=re.I | re.S)
-    path = re.sub(r"<[^>]+>", "", path)
-
-    # Normalize whitespace and slashes.
-    path = path.replace("/", "\\")
-    path = re.sub(r"\s+", " ", path)
-    path = path.strip()
-
-    # Remove spaces before path separators.
-    path = re.sub(r"\s+\\", r"\\", path)
-    path = re.sub(r"\\\s+", r"\\", path)
-
-    # Collapse duplicate backslashes, but avoid changing UNC paths.
-    path = re.sub(r"(?<!^)\\{2,}", r"\\", path)
-
-    return path
-
-
-def extract_game_data_path(wikitext: str) -> str | None:
-    """
-    Extracts the path argument from:
-
-        {{Game data/saves|Windows|PATH}}
-
-    Returns None if no usable path exists.
-    """
-    code = mwparserfromhell.parse(wikitext)
-
-    for template in code.filter_templates(recursive=False):
-        name = str(template.name).strip().lower()
-
-        if name == "game data/saves":
-            try:
-                # Param 2 is the actual path.
-                raw_path = str(template.get(2).value).strip()
-            except ValueError:
-                return None
-
-            if not raw_path:
-                return None
-
-            return render_pcgw_wikitext(raw_path)
-
-    return None
-
-
-def sanitize_pcgw_location(text: str) -> str | None:
-    marker = "DEBUG: Found the location:"
-
-    if marker in text:
-        text = text.split(marker, 1)[1].strip()
-    else:
-        text = text.strip()
-
-    if not text:
-        return None
-
-    path = extract_game_data_path(text)
-
-    if not path:
-        return None
-
-    path = sanitize_filepath(path, platform="Windows")
-
-    return path or None
 
 
 def get_vdf_list():
@@ -324,28 +183,6 @@ def get_wikidata_from_page_id(pageid: int) -> str | None:
     # print("DEBUG wikitext: \n" + wikitext_data)
 
     return wikitext_data
-
-
-def get_save_data_location(wikitext_data, game_app_id):
-    parsed = wtp.parse(wikitext_data)
-    for section in parsed.sections:
-        if (
-            "===Save game data location===" in section
-            and "Save game cloud syncing" not in section
-        ):
-            # print(f"Found Save game data location section: \n{section}")
-            lines = str(section).splitlines()
-
-            for line in lines:
-                try:
-                    if "Game data/saves|Windows|" in line:
-                        line = sanitize_pcgw_location(line)
-                        print(f"DEBUG: Found the location: {line}")
-                        return line
-
-                except Exception as e:
-                    print(f"An error occurred during retrieval: {e}")
-                    return None
 
 
 @on_exception(expo, RateLimitException, max_tries=8)
