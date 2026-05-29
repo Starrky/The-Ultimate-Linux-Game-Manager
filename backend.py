@@ -8,9 +8,9 @@ from wikitextparser import remove_markup, parse
 import time
 from functools import wraps
 import json
-from curr_test import get_wikidata_from_page_id
+import mwparserfromhell
+from pathvalidate import sanitize_filepath
 import re
-
 
 home_dir = os.path.expanduser("~")
 share_dir = home_dir + "/.local/share/"
@@ -54,21 +54,142 @@ pcgw_api_rate_limit = RateLimiter(
 # https://www.pcgamingwiki.com/wiki/PCGamingWiki:API
 
 
-def list_dirs():
-    print("\n")
-    dirs_list = dirs
+PCGW_PATH_VARS = {
+    "localappdata": r"%LOCALAPPDATA%",
+    "appdata": r"%APPDATA%",
+    "steam": r"%STEAM%",
+    "game": r"<GAME_FOLDER>",
+    "uid": r"<USER_ID>",
+    "userprofile": r"%USERPROFILE%",
+    "userprofile\\documents": r"%USERPROFILE%\Documents",
+    "userprofile/documents": r"%USERPROFILE%\Documents",
+}
+"""
+{{p|game}} = <gameinstalldir>
+userprofile = <compdata>/pfx/drive_c/users/steamuser/AppData/LocalLow/
+{{p|appdata}} = <compdata>/pfx/drive_c/users/steamuser/AppData/Roaming/
+%LOCALAPPDATA% = <compdata>/pfx/drive_c/users/steamuser/AppData/Local/
+{{p|localappdata}} =  <compdata>/pfx/drive_c/users/steamuser/AppData/Local/
+uid seem to be unique so has to listdir for it
+steamuserdata_id has to be dirlisted from ~/.local/share/Steam/userdata/
+"""
+DROP_TEMPLATES = {
+    "note",
+    "ref",
+    "refcheck",
+    "refurl",
+    "cn",
+    "citation needed",
+}
 
-    for dir in dirs_list:
-        print(dir)
+
+def extract_template_body(line: str) -> str | None:
+    """
+    Extracts the wikitext after:
+    DEBUG: Found the location:
+    """
+    marker = "DEBUG: Found the location:"
+    if marker not in line:
+        return None
+
+    value = line.split(marker, 1)[1].strip()
+    return value or None
 
 
-def tree_dirs():
-    print("\n")
-    dirs_list = dirs
+def render_pcgw_wikitext(wikitext: str) -> str:
 
-    for dir in dirs_list:
-        dirs_content = os.listdir(dir)
-        print(dirs_content)
+    code = mwparserfromhell.parse(wikitext)
+
+    # Replace nested templates from deepest to shallowest.
+    for template in reversed(code.filter_templates(recursive=True)):
+        name = str(template.name).strip().lower()
+
+        if name in {"p", "path"}:
+            try:
+                key = str(template.get(1).value).strip().lower()
+            except ValueError:
+                replacement = ""
+            else:
+                replacement = PCGW_PATH_VARS.get(key, f"<{key.upper()}>")
+
+            code.replace(template, replacement)
+
+        elif name in DROP_TEMPLATES:
+            code.replace(template, "")
+
+    text = code.strip_code(normalize=True, collapse=True)
+    return normalize_windows_path_text(text)
+
+
+def normalize_windows_path_text(path: str) -> str:
+    path = path.strip()
+
+    # Remove wiki leftovers.
+    path = re.sub(r"<ref[^>]*>.*?</ref>", "", path, flags=re.I | re.S)
+    path = re.sub(r"<[^>]+>", "", path)
+
+    # Normalize whitespace and slashes.
+    path = path.replace("/", "\\")
+    path = re.sub(r"\s+", " ", path)
+    path = path.strip()
+
+    # Remove spaces before path separators.
+    path = re.sub(r"\s+\\", r"\\", path)
+    path = re.sub(r"\\\s+", r"\\", path)
+
+    # Collapse duplicate backslashes, but avoid changing UNC paths.
+    path = re.sub(r"(?<!^)\\{2,}", r"\\", path)
+
+    return path
+
+
+def extract_game_data_path(wikitext: str) -> str | None:
+    """
+    Extracts the path argument from:
+
+        {{Game data/saves|Windows|PATH}}
+
+    Returns None if no usable path exists.
+    """
+    code = mwparserfromhell.parse(wikitext)
+
+    for template in code.filter_templates(recursive=False):
+        name = str(template.name).strip().lower()
+
+        if name == "game data/saves":
+            try:
+                # Param 2 is the actual path.
+                raw_path = str(template.get(2).value).strip()
+            except ValueError:
+                return None
+
+            if not raw_path:
+                return None
+
+            return render_pcgw_wikitext(raw_path)
+
+    return None
+
+
+def sanitize_pcgw_location(text: str) -> str | None:
+    marker = "DEBUG: Found the location:"
+
+    if marker in text:
+        text = text.split(marker, 1)[1].strip()
+    else:
+        text = text.strip()
+
+    if not text:
+        return None
+
+    path = extract_game_data_path(text)
+
+    if not path:
+        return None
+
+    path = sanitize_filepath(path, platform="Windows")
+
+    return path or None
 
 
 def get_vdf_list():
@@ -137,6 +258,7 @@ def get_installed_steam_games_list():
     return steam_games
 
 
+@on_exception(expo, RateLimitException, max_tries=8)
 @pcgw_api_rate_limit
 def get_page_id_from_steam_appid(appid: int) -> str | None:
     """
@@ -172,8 +294,9 @@ def get_page_id_from_steam_appid(appid: int) -> str | None:
     return str(pcgw_game_page_id)
 
 
+@on_exception(expo, RateLimitException, max_tries=8)
 @pcgw_api_rate_limit
-def get_wikidata_from_steam_appid(pageid: int) -> str | None:
+def get_wikidata_from_page_id(pageid: int) -> str | None:
     """
     Get PCGamingWiki page ID based off Steam AppID.
     """
@@ -203,106 +326,6 @@ def get_wikidata_from_steam_appid(pageid: int) -> str | None:
     return wikitext_data
 
 
-PCGW_PATH_VARIABLES = {
-    "appdata": "<compdata>/pfx/drive_c/users/steamuser/AppData/",
-    "%LOCALAPPDATA%": "<compdata>/pfx/drive_c/users/steamuser/AppData/Local/",  # Can also sometimes be AppData/LocalLow/ probably have to check both just in case
-    "userprofile": "<compdata>/pfx/drive_c/users/steamuser/",
-    "documents": "<compdata>/pfx/drive_c/users/steamuser/Documents",
-    "savedgames": "<compdata>/pfx/drive_c/users/steamuser/Saved Games",
-    "steam": "<Steam-folder>",
-    "steamid": "<SteamID>",
-    "{{p|game}}": "<gameinstalldir>",
-    "": "",
-}
-"""
-{{p|game}} = <gameinstalldir>
-userprofile = <compdata>/pfx/drive_c/users/steamuser/AppData/LocalLow/
-{{p|appdata}} = <compdata>/pfx/drive_c/users/steamuser/AppData/Roaming/
-%LOCALAPPDATA% = <compdata>/pfx/drive_c/users/steamuser/AppData/Local/
-{{p|localappdata}} =  <compdata>/pfx/drive_c/users/steamuser/AppData/Local/
-uid seem to be unique so has to listdir for it
-steamuserdata_id has to be dirlisted from ~/.local/share/Steam/userdata/
-"""
-
-
-def remove_template_blocks(text: str, template_names: set[str]) -> str:
-    result = []
-    i = 0
-
-    while i < len(text):
-        if text.startswith("{{", i):
-            start = i
-            i += 2
-
-            name_start = i
-            while i < len(text) and text[i] not in "|}":
-                i += 1
-
-            template_name = text[name_start:i].strip().lower()
-
-            if template_name in template_names:
-                depth = 1
-
-                while i < len(text) and depth > 0:
-                    if text.startswith("{{", i):
-                        depth += 1
-                        i += 2
-                    elif text.startswith("}}", i):
-                        depth -= 1
-                        i += 2
-                    else:
-                        i += 1
-
-                continue
-
-            result.append(text[start:i])
-            continue
-
-        result.append(text[i])
-        i += 1
-
-    return "".join(result)
-
-
-def replace_p_templates(text: str) -> str:
-    def repl(match):
-        key = match.group(1).strip().lower()
-        return PCGW_PATH_VARIABLES.get(key, f"<{key}>")
-
-    return re.sub(r"\{\{P\|([^{}|]+)\}\}", repl, text)
-
-
-def clean_pcgw_save_path(raw: str) -> str:
-    text = raw.strip()
-
-    # Remove references and explanatory metadata
-    text = remove_template_blocks(
-        text,
-        {
-            "note",
-            "refcheck",
-            "refurl",
-            "refdevice",
-            "refsnip",
-        },
-    )
-
-    # Remove HTML ref blocks if any remain
-    text = re.sub(r"<ref\b[^>]*>.*?</ref>", "", text, flags=re.DOTALL | re.IGNORECASE)
-    text = re.sub(r"<ref\b[^/]*/>", "", text, flags=re.IGNORECASE)
-
-    # Convert PCGW path placeholders
-    text = replace_p_templates(text)
-
-    # Remove simple code tags but keep their content
-    text = re.sub(r"</?code>", "", text, flags=re.IGNORECASE)
-
-    # Collapse whitespace
-    text = re.sub(r"\s+", " ", text).strip()
-
-    return text
-
-
 def get_save_data_location(wikitext_data, game_app_id):
     parsed = wtp.parse(wikitext_data)
     for section in parsed.sections:
@@ -311,28 +334,21 @@ def get_save_data_location(wikitext_data, game_app_id):
             and "Save game cloud syncing" not in section
         ):
             # print(f"Found Save game data location section: \n{section}")
-            game_save_location_section = section
             lines = str(section).splitlines()
 
             for line in lines:
                 try:
                     if "Game data/saves|Windows|" in line:
-                        line = line.removeprefix("{{Game data/saves|Windows|")
-                        # line = line.replace(
-                        #    "{{P|userprofile\\Documents}}", "\\userprofile\\Documents"
-                        # )
-                        line = line.replace('"string of numbers"|}}', str(game_app_id))
-                        line = line.rstrip("}}")
-                        line = clean_pcgw_save_path(line)
-                        print(f"DEBUG: Found the line: {line}")
-                        return game_save_location_section
+                        line = sanitize_pcgw_location(line)
+                        print(f"DEBUG: Found the location: {line}")
+                        return line
 
                 except Exception as e:
                     print(f"An error occurred during retrieval: {e}")
-                    # ALWAYS return None on failure
                     return None
 
 
+@on_exception(expo, RateLimitException, max_tries=8)
 @pcgw_api_rate_limit
 def main():
     # Get steam games save data location
@@ -343,10 +359,11 @@ def main():
         steam_game_appid = game_info["steam_game_appid"]
         steam_game_compdata = game_info["steam_game_compdata"]
 
-        # print(f"DEBUG: Steam Game Name: {steam_game_name}")
-        # print(f"DEBUG: Steam Game Install Dir: {steam_game_install_dir}")
-        # print(f"DEBUG: Steam Game AppID: {steam_game_appid}")
-        # print(f"DEBUG: Steam Game CompData: {steam_game_compdata}")
+        # print(f"""DEBUG: Steam Game Name: {steam_game_name}
+        # DEBUG: Steam Game Install Dir: {steam_game_install_dir}
+        # DEBUG: Steam Game AppID: {steam_game_appid}
+        # DEBUG: Steam Game CompData: {steam_game_compdata}
+        # """)
 
         steam_game_page_id = get_page_id_from_steam_appid(appid=steam_game_appid)
         if steam_game_page_id:
