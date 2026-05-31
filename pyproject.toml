@@ -1,0 +1,9 @@
+[project]
+name = "the-ultimate-linux-game-manager"
+version = "0.1.0"
+requires-python = ">=3.13"
+dependencies = [
+    "beautifulsoup4>=4.14.3",
+    "mwparserfromhell>=0.7.2",
+    "requests>=2.34.2",
+]
