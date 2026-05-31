@@ -167,6 +167,14 @@ def replace_file_with_retries(
     delay_seconds: float = 0.25,
 ) -> None:
     for attempt in range(attempts):
+        try:
+            source_path.replace(destination_path)
+            return
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise
+
+            time.sleep(delay_seconds)
             delay_seconds = min(delay_seconds * 1.5, 5.0)
 
 
