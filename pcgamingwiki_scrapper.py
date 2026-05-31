@@ -41,6 +41,7 @@ class GameRecord:
     pageid: int
     title: str
     url: str
+    steam_appid: int | None
     save_paths: list[GameDataPath]
     config_paths: list[GameDataPath]
 
@@ -373,9 +374,39 @@ def fetch_rendered_html_by_pageid(
 
 def preprocess_wikitext(text: str) -> str:
     text = re.sub(r"<!--.*?-->", "", text, flags=re.S)
-    text = re.sub(r"<ref\b[^>]*>.*?</ref>", "", text, flags=re.I | re.S)
     text = re.sub(r"<ref\b[^/]*/>", "", text, flags=re.I)
+    text = re.sub(r"<ref\b[^>]*>.*?</ref>", "", text, flags=re.I | re.S)
     return text
+
+
+def extract_steam_appid_from_wikitext(wikitext: str) -> int | None:
+    code = mwparserfromhell.parse(preprocess_wikitext(wikitext))
+
+    for template in code.filter_templates(recursive=True):
+        template_name = str(template.name).strip().lower()
+
+        if template_name != "infobox game":
+            continue
+
+        for param in template.params:
+            param_name = str(param.name).strip().lower()
+
+            if param_name != "steam appid":
+                continue
+
+            value = str(param.value).strip()
+
+            if not value:
+                return None
+
+            match = re.fullmatch(r"\d+", value)
+
+            if match is None:
+                return None
+
+            return int(value)
+
+    return None
 
 
 def normalize_template_variable_key(key: str) -> str:
@@ -867,6 +898,7 @@ def record_to_jsonable(record: GameRecord) -> dict[str, Any]:
         "pageid": record.pageid,
         "title": record.title,
         "url": record.url,
+        "steamappid": record.steam_appid,
         "save_paths": [asdict(item) for item in record.save_paths],
         "config_paths": [asdict(item) for item in record.config_paths],
     }
@@ -918,6 +950,7 @@ def load_existing_records(output_path: Path) -> list[GameRecord]:
                 pageid=int(item["pageid"]),
                 title=item["title"],
                 url=item["url"],
+                steam_appid=item.get("steamappid"),
                 save_paths=save_paths,
                 config_paths=config_paths,
             )
@@ -1058,11 +1091,15 @@ def build_database(
 
                 save_paths: list[GameDataPath] = []
                 config_paths: list[GameDataPath] = []
+                steam_appid: int | None = None
 
                 try:
                     page_data = wikitext_by_pageid.get(pageid)
 
                     if page_data:
+                        steam_appid = extract_steam_appid_from_wikitext(
+                            page_data["wikitext"]
+                        )
                         save_paths, config_paths = extract_paths_from_wikitext(
                             page_data["wikitext"],
                             debug=debug,
@@ -1096,6 +1133,7 @@ def build_database(
                                     pageid=pageid,
                                     title=title,
                                     url=page_url(title),
+                                    steam_appid=steam_appid,
                                     save_paths=save_paths,
                                     config_paths=config_paths,
                                 )

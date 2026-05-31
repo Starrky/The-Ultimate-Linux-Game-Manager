@@ -1,3 +1,8 @@
+.pcgw_cache
+.venv
+tests
+
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
