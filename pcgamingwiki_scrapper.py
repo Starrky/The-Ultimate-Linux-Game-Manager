@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import time
 from dataclasses import asdict, dataclass
@@ -157,6 +158,16 @@ def write_json_file(path: Path, data: Any) -> None:
 
     with path.open("w", encoding="utf-8") as file:
         json.dump(data, file, ensure_ascii=False, indent=2, sort_keys=True)
+
+
+def replace_file_with_retries(
+    source_path: Path,
+    destination_path: Path,
+    attempts: int = 20,
+    delay_seconds: float = 0.25,
+) -> None:
+    for attempt in range(attempts):
+            delay_seconds = min(delay_seconds * 1.5, 5.0)
 
 
 def api_get(
@@ -893,14 +904,30 @@ def extract_paths_from_html(
     return dedupe_paths(save_paths), dedupe_paths(config_paths)
 
 
-def record_to_jsonable(record: GameRecord) -> dict[str, Any]:
-    return {
-        "pageid": record.pageid,
+def record_to_jsonable(
+    record: GameRecord,
+    include_pageid: bool = True,
+) -> dict[str, Any]:
+    item = {
         "title": record.title,
         "url": record.url,
         "steamappid": record.steam_appid,
         "save_paths": [asdict(item) for item in record.save_paths],
         "config_paths": [asdict(item) for item in record.config_paths],
+    }
+
+    if include_pageid:
+        item = {"pageid": record.pageid, **item}
+
+    return item
+
+
+def records_to_jsonable_by_pageid(
+    records: list[GameRecord],
+) -> dict[str, dict[str, Any]]:
+    return {
+        str(record.pageid): record_to_jsonable(record, include_pageid=False)
+        for record in records
     }
 
 
@@ -940,14 +967,22 @@ def load_existing_records(output_path: Path) -> list[GameRecord]:
 
     records: list[GameRecord] = []
 
-    for item in data.get("games", []):
+    games = data.get("games", {})
+    iterable: Iterable[tuple[int | None, dict[str, Any]]]
+
+    if isinstance(games, dict):
+        iterable = ((int(pageid), item) for pageid, item in games.items())
+    else:
+        iterable = ((None, item) for item in games)
+
+    for pageid, item in iterable:
         save_paths = [GameDataPath(**path) for path in item.get("save_paths", [])]
 
         config_paths = [GameDataPath(**path) for path in item.get("config_paths", [])]
 
         records.append(
             GameRecord(
-                pageid=int(item["pageid"]),
+                pageid=pageid if pageid is not None else int(item["pageid"]),
                 title=item["title"],
                 url=item["url"],
                 steam_appid=item.get("steamappid"),
@@ -964,12 +999,19 @@ def write_database_snapshot(output_path: Path, records: list[GameRecord]) -> Non
         "source": "PCGamingWiki",
         "generated_at_unix": int(time.time()),
         "count": len(records),
-        "games": [record_to_jsonable(record) for record in records],
+        "games": records_to_jsonable_by_pageid(records),
     }
 
-    temp_path = output_path.with_suffix(output_path.suffix + ".tmp")
+    temp_path = output_path.with_name(
+        f"{output_path.name}.{os.getpid()}.{time.monotonic_ns()}.tmp"
+    )
     write_json_file(temp_path, payload)
-    temp_path.replace(output_path)
+
+    try:
+        replace_file_with_retries(temp_path, output_path)
+    except Exception:
+        temp_path.unlink(missing_ok=True)
+        raise
 
 
 def write_toml(output_path: Path, records: list[GameRecord]) -> None:
@@ -982,7 +1024,7 @@ def write_toml(output_path: Path, records: list[GameRecord]) -> None:
         "source": "PCGamingWiki",
         "generated_at_unix": int(time.time()),
         "count": len(records),
-        "games": [record_to_jsonable(record) for record in records],
+        "games": records_to_jsonable_by_pageid(records),
     }
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
